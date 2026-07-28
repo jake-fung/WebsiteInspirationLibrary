@@ -6,7 +6,14 @@ import { openDb } from './lib/db.js';
 import { createClient, analyzeImage } from './lib/analyze.js';
 import { captureSite } from './lib/capture.js';
 
-process.loadEnvFile?.('.env');
+try {
+  process.loadEnvFile?.('.env');
+} catch (err) {
+  // A missing .env is the normal first-run state — the app is meant to boot
+  // without a key and simply skip AI drafting. Anything else, such as a
+  // malformed file, still deserves to be surfaced.
+  if (err.code !== 'ENOENT') throw err;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dataDir = join(here, 'data');
