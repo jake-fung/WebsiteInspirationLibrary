@@ -13,7 +13,7 @@
 - **Node >= 24.** Required for built-in `node:sqlite`. Verified present on this machine (v24.15.0).
 - **ESM everywhere.** `package.json` sets `"type": "module"`. No `require()`, no `__dirname` — derive paths from `import.meta.url`.
 - **Model ID is exactly `claude-opus-5`.** Never append a date suffix.
-- **`max_tokens: 16000`, non-streaming.** Well within SDK HTTP timeouts for a response this size.
+- **`max_tokens: 24000`, non-streaming, `thinking: {type: 'adaptive'}` with `effort: 'low'`.** On `claude-opus-5` thinking is on by default and `max_tokens` caps thinking **plus** response text together. Describing a design is a perception task, not deep reasoning, so low effort keeps the spend down while leaving ample headroom for the JSON. A `stop_reason === 'max_tokens'` response must be reported as truncation, never as malformed JSON.
 - **Zero test dependencies.** `node:test` + `node:assert/strict` only. No jest, vitest, or supertest.
 - **No native-compilation dependencies.** This is why `node:sqlite` is used instead of `better-sqlite3`.
 - **JS objects use camelCase; SQL columns use snake_case.** `db.js` is the only module that knows about snake_case — it maps at the boundary.
@@ -531,7 +531,9 @@ test('analyzeImage sends the image, the model, and the schema', async () => {
 
   const params = client.calls[0];
   assert.equal(params.model, 'claude-opus-5');
-  assert.equal(params.max_tokens, 16000);
+  assert.equal(params.max_tokens, 24000);
+  assert.deepEqual(params.thinking, { type: 'adaptive' });
+  assert.equal(params.output_config.effort, 'low');
   assert.deepEqual(params.output_config.format.schema, ANALYSIS_SCHEMA);
 
   const blocks = params.messages[0].content;
@@ -565,6 +567,19 @@ test('analyzeImage throws a clear error on refusal', async () => {
   await assert.rejects(
     () => analyzeImage({ imagePath: tempImage(), client }),
     /declined to analyze this image \(cyber\)/
+  );
+});
+
+test('analyzeImage reports truncation as truncation, not bad JSON', async () => {
+  // Thinking shares the max_tokens budget, so a long think can truncate the
+  // JSON. That must not be reported as malformed output.
+  const client = stubClient({
+    stop_reason: 'max_tokens',
+    content: [{ type: 'text', text: '{"designType": "Edit' }],
+  });
+  await assert.rejects(
+    () => analyzeImage({ imagePath: tempImage(), client }),
+    /ran out of output budget/
   );
 });
 
@@ -700,15 +715,31 @@ export async function analyzeImage({ imagePath, facts = null, client }) {
 
   const response = await client.messages.create({
     model: 'claude-opus-5',
-    max_tokens: 16000,
+    max_tokens: 24000,
+    // Thinking is on by default on Opus 5 and shares the max_tokens budget with
+    // the response text. Low effort suits a perception task and leaves the
+    // budget comfortably clear of the JSON.
+    thinking: { type: 'adaptive' },
     system: SYSTEM_PROMPT,
-    output_config: { format: { type: 'json_schema', schema: ANALYSIS_SCHEMA } },
+    output_config: {
+      effort: 'low',
+      format: { type: 'json_schema', schema: ANALYSIS_SCHEMA },
+    },
     messages: [{ role: 'user', content }],
   });
 
   if (response.stop_reason === 'refusal') {
     const category = response.stop_details?.category ?? 'unspecified';
     throw new Error(`Claude declined to analyze this image (${category}).`);
+  }
+
+  // Must precede the JSON.parse below: a truncated response is still parseable-
+  // looking text, and reporting it as malformed JSON sends you debugging the
+  // wrong thing.
+  if (response.stop_reason === 'max_tokens') {
+    throw new Error(
+      'Analysis ran out of output budget before finishing. Retry, or raise max_tokens.'
+    );
   }
 
   const text = response.content.find((b) => b.type === 'text')?.text ?? '';
@@ -723,7 +754,7 @@ export async function analyzeImage({ imagePath, facts = null, client }) {
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `node --test tests/analyze.test.js`
-Expected: PASS — 7 tests passing
+Expected: PASS — 8 tests passing
 
 - [ ] **Step 6: Commit**
 
