@@ -1397,24 +1397,89 @@ git commit -m "feat: express app factory and inspiration crud routes"
 ### Task 7: Ingest routes and background analysis
 
 **Files:**
-- Create: `server/routes/ingest.js`, `server/routes/analyze.js`, `server/index.js`, `tests/routes-ingest.test.js`
-- Modify: `server/app.js` (mount the new routers)
+- Create: `server/lib/analysis-queue.js`, `server/routes/ingest.js`, `server/routes/analyze.js`, `server/index.js`, `tests/routes-ingest.test.js`
+- Modify: `server/app.js` (mount the new routers, expose `settleAnalysis`)
 - Modify: `package.json` (add `concurrently`)
 
 **Interfaces:**
 - Consumes: `images.js`, `capture.js` (`captureFn`), `analyze.js` (`analyzeFn`), `db.js`
 - Produces:
+  - `createAnalysisQueue() -> {add(promise), settle()}` — tracks in-flight background analyses
   - `POST /api/ingest/file` — raw image body, `Content-Type` names the media type → `201` inspiration
   - `POST /api/ingest/url` — `{url}` → sniffs image-vs-site → `201` inspiration
   - `POST /api/inspirations/:id/analyze` — retry → `200` inspiration
   - `runAnalysis({db, id, client, analyzeFn}) -> Promise<void>` — exported so tests can await it
+  - `app.locals.settleAnalysis() -> Promise<void>` — resolves when every background analysis has finished
+
+**Why the queue exists:** ingest deliberately returns before analysis completes, so a test needs a way to know when the background work is done. Sleeping for a fixed interval is flaky under load. The queue makes the wait deterministic without changing app behaviour — nothing in production calls `settle()`.
 
 - [ ] **Step 1: Install concurrently**
 
 Run: `npm install --save-dev concurrently`
 Expected: adds `concurrently` to devDependencies
 
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 2: Write the analysis queue**
+
+Create `server/lib/analysis-queue.js`:
+
+```js
+/**
+ * Tracks in-flight background analyses so tests can await them
+ * deterministically instead of sleeping. Production never calls settle().
+ */
+export function createAnalysisQueue() {
+  const pending = new Set();
+
+  return {
+    add(promise) {
+      pending.add(promise);
+      promise.finally(() => pending.delete(promise));
+      return promise;
+    },
+
+    async settle() {
+      // Loop rather than a single allSettled: an analysis could enqueue more.
+      while (pending.size > 0) {
+        await Promise.allSettled([...pending]);
+      }
+    },
+  };
+}
+```
+
+Create `tests/analysis-queue.test.js`:
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createAnalysisQueue } from '../server/lib/analysis-queue.js';
+
+test('settle resolves immediately when nothing is pending', async () => {
+  await createAnalysisQueue().settle();
+});
+
+test('settle waits for every tracked promise', async () => {
+  const queue = createAnalysisQueue();
+  const done = [];
+
+  queue.add(new Promise((r) => setTimeout(r, 10)).then(() => done.push('a')));
+  queue.add(new Promise((r) => setTimeout(r, 20)).then(() => done.push('b')));
+
+  await queue.settle();
+  assert.deepEqual(done.sort(), ['a', 'b']);
+});
+
+test('settle does not reject when a tracked promise rejects', async () => {
+  const queue = createAnalysisQueue();
+  queue.add(Promise.reject(new Error('boom')));
+  await queue.settle();
+});
+```
+
+Run: `node --test tests/analysis-queue.test.js`
+Expected: PASS — 3 tests passing
+
+- [ ] **Step 3: Write the failing test**
 
 Create `tests/routes-ingest.test.js`:
 
@@ -1427,7 +1492,7 @@ import { join } from 'node:path';
 import { createApp } from '../server/app.js';
 import { openDb, getInspiration } from '../server/lib/db.js';
 
-let db, baseUrl, server, analyzeCalls, analyzeImpl;
+let db, app, baseUrl, server, analyzeCalls, analyzeImpl;
 
 const RESULT = {
   designType: 'Editorial', title: 'Kinfolk', brief: 'b',
@@ -1442,7 +1507,7 @@ beforeEach(async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'app-'));
   mkdirSync(join(dataDir, 'images'), { recursive: true });
 
-  const app = createApp({
+  app = createApp({
     db,
     dataDir,
     client: {},
@@ -1458,8 +1523,9 @@ beforeEach(async () => {
   return () => server.close();
 });
 
-// Analysis is fired in the background; give the microtask queue a chance.
-const settle = () => new Promise((r) => setTimeout(r, 50));
+// Ingest returns before analysis finishes. Await the queue rather than
+// sleeping, so the test is deterministic under load.
+const settle = () => app.locals.settleAnalysis();
 
 test('POST /api/ingest/file stores the image and returns immediately', async () => {
   const res = await fetch(`${baseUrl}/api/ingest/file`, {
@@ -1569,12 +1635,12 @@ test('POST /api/inspirations/:id/analyze retries a failed record', async () => {
 });
 ```
 
-- [ ] **Step 3: Run the test to verify it fails**
+- [ ] **Step 4: Run the test to verify it fails**
 
 Run: `node --test tests/routes-ingest.test.js`
 Expected: FAIL — `Cannot find module '.../server/routes/ingest.js'`
 
-- [ ] **Step 4: Write the analysis runner and retry route**
+- [ ] **Step 5: Write the analysis runner and retry route**
 
 Create `server/routes/analyze.js`:
 
@@ -1627,7 +1693,7 @@ export function analyzeRouter({ db, client, analyzeFn }) {
 }
 ```
 
-- [ ] **Step 5: Write the ingest routes**
+- [ ] **Step 6: Write the ingest routes**
 
 Create `server/routes/ingest.js`:
 
@@ -1640,14 +1706,13 @@ import { createInspiration } from '../lib/db.js';
 import { saveImageBuffer, saveImageFromUrl, looksLikeImageUrl } from '../lib/images.js';
 import { runAnalysis } from './analyze.js';
 
-export function ingestRouter({ db, dataDir, client, captureFn, analyzeFn }) {
+export function ingestRouter({ db, dataDir, client, captureFn, analyzeFn, queue }) {
   const router = Router();
   const imagesDir = join(dataDir, 'images');
 
   // Analysis runs detached so ingest returns as soon as the image is on disk.
-  const startAnalysis = (id) => {
-    runAnalysis({ db, id, client, analyzeFn });
-  };
+  // The queue tracks the in-flight promise so tests can await completion.
+  const startAnalysis = (id) => queue.add(runAnalysis({ db, id, client, analyzeFn }));
 
   router.post(
     '/ingest/file',
@@ -1697,13 +1762,24 @@ export function ingestRouter({ db, dataDir, client, captureFn, analyzeFn }) {
 }
 ```
 
-- [ ] **Step 6: Mount the new routers**
+- [ ] **Step 7: Mount the new routers and expose the queue**
 
 In `server/app.js`, add these imports below the existing `inspirationsRouter` import:
 
 ```js
 import { ingestRouter } from './routes/ingest.js';
 import { analyzeRouter } from './routes/analyze.js';
+import { createAnalysisQueue } from './lib/analysis-queue.js';
+```
+
+Replace the `const deps = { db, dataDir, client, captureFn, analyzeFn };` line with:
+
+```js
+  const queue = createAnalysisQueue();
+  const deps = { db, dataDir, client, captureFn, analyzeFn, queue };
+
+  // Tests await this to know background analysis has finished.
+  app.locals.settleAnalysis = () => queue.settle();
 ```
 
 Then replace the single `app.use('/api', inspirationsRouter(deps));` line with:
@@ -1714,7 +1790,7 @@ Then replace the single `app.use('/api', inspirationsRouter(deps));` line with:
   app.use('/api', inspirationsRouter(deps));
 ```
 
-- [ ] **Step 7: Write the server entry point**
+- [ ] **Step 8: Write the server entry point**
 
 Create `server/index.js`:
 
@@ -1750,20 +1826,20 @@ const port = Number(process.env.PORT ?? 3001);
 app.listen(port, () => console.log(`Inspiration library API on http://localhost:${port}`));
 ```
 
-- [ ] **Step 8: Run the test to verify it passes**
+- [ ] **Step 9: Run the test to verify it passes**
 
 Run: `node --test tests/routes-ingest.test.js`
 Expected: PASS — 7 tests passing
 
-- [ ] **Step 9: Run the whole suite**
+- [ ] **Step 10: Run the whole suite**
 
 Run: `npm test`
 Expected: PASS — all suites green (prompt, db, analyze, capture, images, routes-inspirations, routes-ingest)
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add package.json package-lock.json server/routes/ingest.js server/routes/analyze.js server/index.js server/app.js tests/routes-ingest.test.js
+git add package.json package-lock.json server/lib/analysis-queue.js server/routes/ingest.js server/routes/analyze.js server/index.js server/app.js tests/analysis-queue.test.js tests/routes-ingest.test.js
 git commit -m "feat: ingest routes with non-blocking background analysis"
 ```
 
