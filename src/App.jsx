@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import * as api from './api.js';
 import { Sidebar } from './components/Sidebar.jsx';
 import { Grid } from './components/Grid.jsx';
+import { CaptureBar } from './components/CaptureBar.jsx';
 
 export default function App() {
   const [items, setItems] = useState([]);
@@ -49,6 +50,11 @@ export default function App() {
           {error} <span className="dismiss">dismiss</span>
         </div>
       )}
+
+      <CaptureBar
+        onCaptured={(item) => { setSelectedId(item.id); refresh().catch(() => {}); }}
+        onError={setError}
+      />
 
       <div className="layout">
         <Sidebar
