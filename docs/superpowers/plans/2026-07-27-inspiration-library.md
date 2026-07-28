@@ -1247,7 +1247,7 @@ Expected: adds `express` (v5) to dependencies
 Create `tests/routes-inspirations.test.js`:
 
 ```js
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1271,7 +1271,14 @@ beforeEach(async () => {
   server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
-  return () => server.close();
+});
+
+// node:test ignores a function returned from a hook, so the listening server
+// has to be closed explicitly — otherwise open handles keep the runner alive
+// and the suite hangs after the last test.
+afterEach(async () => {
+  await new Promise((resolve) => server.close(resolve));
+  db.close();
 });
 
 test('GET /api/health reports whether a key is configured', async () => {
@@ -1531,7 +1538,7 @@ Expected: PASS — 3 tests passing
 Create `tests/routes-ingest.test.js`:
 
 ```js
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1567,7 +1574,14 @@ beforeEach(async () => {
   server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
-  return () => server.close();
+});
+
+// node:test ignores a function returned from a hook, so the listening server
+// has to be closed explicitly — otherwise open handles keep the runner alive
+// and the suite hangs after the last test.
+afterEach(async () => {
+  await new Promise((resolve) => server.close(resolve));
+  db.close();
 });
 
 // Ingest returns before analysis finishes. Await the queue rather than
