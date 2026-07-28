@@ -70,7 +70,7 @@ Scaffolding folds into this task because `prompt.js` is the first thing that nee
     "dev:server": "node --watch server/index.js",
     "dev:web": "vite",
     "build": "vite build",
-    "test": "node --test tests/"
+    "test": "node --test"
   }
 }
 ```
@@ -991,8 +991,8 @@ export async function captureSite(url, { outDir, id, timeoutMs = DEFAULT_TIMEOUT
     } catch (cause) {
       throw new Error(
         `Could not load ${url}. The site may be slow, offline, or blocking automated ` +
-          'browsers. Try opening it, taking a screenshot yourself, and dropping the ' +
-          'image in instead.',
+          'browsers. Try opening it and screenshot it yourself, then drop the image ' +
+          'in instead.',
         { cause }
       );
     }
