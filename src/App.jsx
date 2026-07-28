@@ -3,6 +3,7 @@ import * as api from './api.js';
 import { Sidebar } from './components/Sidebar.jsx';
 import { Grid } from './components/Grid.jsx';
 import { CaptureBar } from './components/CaptureBar.jsx';
+import { DetailPanel } from './components/DetailPanel.jsx';
 
 export default function App() {
   const [items, setItems] = useState([]);
@@ -66,6 +67,15 @@ export default function App() {
         <main className="main">
           <Grid items={items} selectedId={selectedId} onSelect={setSelectedId} />
         </main>
+        {selectedId && items.some((i) => i.id === selectedId) && (
+          <DetailPanel
+            item={items.find((i) => i.id === selectedId)}
+            knownTypes={types}
+            onChanged={() => refresh().catch(() => {})}
+            onClose={() => setSelectedId(null)}
+            onError={setError}
+          />
+        )}
       </div>
     </div>
   );
