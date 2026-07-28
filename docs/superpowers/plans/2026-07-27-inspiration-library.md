@@ -1487,7 +1487,11 @@ export function createAnalysisQueue() {
   return {
     add(promise) {
       pending.add(promise);
-      promise.finally(() => pending.delete(promise));
+      // `.finally()` returns a *derived* promise that rejects whenever the
+      // tracked one does. Nothing awaits that derived promise, so leaving it
+      // bare surfaces as an unhandledRejection. Swallow it here — callers get
+      // the original promise back with its rejection intact.
+      promise.finally(() => pending.delete(promise)).catch(() => {});
       return promise;
     },
 
@@ -1580,8 +1584,15 @@ beforeEach(async () => {
 // has to be closed explicitly — otherwise open handles keep the runner alive
 // and the suite hangs after the last test.
 afterEach(async () => {
-  await new Promise((resolve) => server.close(resolve));
-  db.close();
+  // Settle first so no background analysis writes to a closed database, but
+  // close in a finally — a teardown that throws before closing leaks the
+  // listening server and hangs the runner.
+  try {
+    await app.locals.settleAnalysis();
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    db.close();
+  }
 });
 
 // Ingest returns before analysis finishes. Await the queue rather than
