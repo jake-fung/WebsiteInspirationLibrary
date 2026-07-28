@@ -1111,6 +1111,20 @@ test('saveImageFromUrl names Pinterest explicitly on a 403', async () => {
   );
 });
 
+test('saveImageFromUrl accepts an uppercase content-type', async () => {
+  const dir = outDir();
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'content-type': 'IMAGE/PNG' }),
+    arrayBuffer: async () => new TextEncoder().encode('png-bytes').buffer,
+  });
+  const path = await saveImageFromUrl('https://x.com/a.png', {
+    outDir: dir, id: 'abc', fetchImpl,
+  });
+  assert.equal(path, join(dir, 'abc.png'));
+});
+
 test('saveImageFromUrl rejects a non-image content-type before writing', async () => {
   const fetchImpl = async () => ({
     ok: true,
@@ -1176,7 +1190,9 @@ export async function saveImageFromUrl(url, { outDir, id, fetchImpl = fetch }) {
     throw new Error(`That image URL returned ${response.status}.`);
   }
 
-  const mediaType = response.headers.get('content-type') || '';
+  // Media types are case-insensitive per RFC 7231 and fetch does not normalise
+  // header values, so a server sending `IMAGE/JPEG` is still sending an image.
+  const mediaType = (response.headers.get('content-type') || '').toLowerCase();
   if (!mediaType.startsWith('image/')) {
     throw new Error(
       `That URL did not return an image (got "${mediaType || 'no content-type'}").`

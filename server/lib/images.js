@@ -39,7 +39,9 @@ export async function saveImageFromUrl(url, { outDir, id, fetchImpl = fetch }) {
     throw new Error(`That image URL returned ${response.status}.`);
   }
 
-  const mediaType = response.headers.get('content-type') || '';
+  // Media types are case-insensitive per RFC 7231 and fetch does not normalise
+  // header values, so a server sending `IMAGE/JPEG` is still sending an image.
+  const mediaType = (response.headers.get('content-type') || '').toLowerCase();
   if (!mediaType.startsWith('image/')) {
     throw new Error(
       `That URL did not return an image (got "${mediaType || 'no content-type'}").`
