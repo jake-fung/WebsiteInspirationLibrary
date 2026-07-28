@@ -19,6 +19,21 @@ Open http://localhost:5173
 The app runs without an API key — capture and manual editing work normally,
 only AI drafting is disabled.
 
+### Paying for analysis
+
+Two analyzers, selected by the `ANALYZER` env var:
+
+| `ANALYZER` | How analysis runs | Billed to |
+|---|---|---|
+| unset (default) | One Anthropic API vision call | API credits, ~1–2¢ per inspiration |
+| `claude-code` | Shells out to the `claude` CLI | Your Claude subscription |
+
+`claude-code` mode needs Claude Code installed, `claude` on `PATH`, and an
+active `claude` login; no `ANTHROPIC_API_KEY` is required. It is slower per
+capture (a CLI process per analysis) and relies on prompt-level JSON discipline
+rather than the API's schema enforcement, so a malformed reply surfaces as a
+failed analysis you can retry.
+
 ## Capturing
 
 | Input | What happens |
