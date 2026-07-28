@@ -101,15 +101,31 @@ export async function analyzeImage({ imagePath, facts = null, client }) {
 
   const response = await client.messages.create({
     model: 'claude-opus-5',
-    max_tokens: 16000,
+    max_tokens: 24000,
+    // Thinking is on by default on Opus 5 and shares the max_tokens budget with
+    // the response text. Low effort suits a perception task and leaves the
+    // budget comfortably clear of the JSON.
+    thinking: { type: 'adaptive' },
     system: SYSTEM_PROMPT,
-    output_config: { format: { type: 'json_schema', schema: ANALYSIS_SCHEMA } },
+    output_config: {
+      effort: 'low',
+      format: { type: 'json_schema', schema: ANALYSIS_SCHEMA },
+    },
     messages: [{ role: 'user', content }],
   });
 
   if (response.stop_reason === 'refusal') {
     const category = response.stop_details?.category ?? 'unspecified';
     throw new Error(`Claude declined to analyze this image (${category}).`);
+  }
+
+  // Must precede the JSON.parse below: a truncated response is still parseable-
+  // looking text, and reporting it as malformed JSON sends you debugging the
+  // wrong thing.
+  if (response.stop_reason === 'max_tokens') {
+    throw new Error(
+      'Analysis ran out of output budget before finishing. Retry, or raise max_tokens.'
+    );
   }
 
   const text = response.content.find((b) => b.type === 'text')?.text ?? '';

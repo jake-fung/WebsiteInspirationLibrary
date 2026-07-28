@@ -59,7 +59,9 @@ test('analyzeImage sends the image, the model, and the schema', async () => {
 
   const params = client.calls[0];
   assert.equal(params.model, 'claude-opus-5');
-  assert.equal(params.max_tokens, 16000);
+  assert.equal(params.max_tokens, 24000);
+  assert.deepEqual(params.thinking, { type: 'adaptive' });
+  assert.equal(params.output_config.effort, 'low');
   assert.deepEqual(params.output_config.format.schema, ANALYSIS_SCHEMA);
 
   const blocks = params.messages[0].content;
@@ -93,6 +95,19 @@ test('analyzeImage throws a clear error on refusal', async () => {
   await assert.rejects(
     () => analyzeImage({ imagePath: tempImage(), client }),
     /declined to analyze this image \(cyber\)/
+  );
+});
+
+test('analyzeImage reports truncation as truncation, not bad JSON', async () => {
+  // Thinking shares the max_tokens budget, so a long think can truncate the
+  // JSON. That must not be reported as malformed output.
+  const client = stubClient({
+    stop_reason: 'max_tokens',
+    content: [{ type: 'text', text: '{"designType": "Edit' }],
+  });
+  await assert.rejects(
+    () => analyzeImage({ imagePath: tempImage(), client }),
+    /ran out of output budget/
   );
 });
 
