@@ -23,7 +23,7 @@ mkdirSync(join(dataDir, 'images'), { recursive: true });
 // ANALYZER=claude-code shells out to the Claude Code CLI, so analysis is billed
 // against a Claude subscription instead of API credits. Anything else uses the
 // Anthropic API directly.
-const useClaudeCode = process.env.ANALYZER === 'claude-code';
+const useClaudeCode = true;
 
 // createApp uses `client` for two things: the has-drafting flag on /api/health,
 // and the argument handed to analyzeFn. The CLI analyzer needs no client, but
